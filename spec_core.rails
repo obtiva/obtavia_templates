@@ -1,0 +1,81 @@
+# Feature & Spec Rails template
+#
+# Builds on top of:
+#   - 001_core.rails
+#
+# Inherited setup:
+#   - Rails application directory structure initiliazed with git as the SCM system
+#   - Standard "ignored files" are added to '.gitignore' (.log, database.yml, etc)
+#   - Saved standard "empty" directories you want in your app
+#   - A base database.yml file set up to talk to Sqlite3
+#   - Removes unnecessary files...except index.html (README, et cetera)
+#   - A single "Initial commit" commit in your repository history
+#
+# Added functionality/features:
+#   - RSpec, rspec-rails, webrat, and cucumber gems
+#   - Builds the gems
+#   - Removes the test directory
+#   - App initialized for both rspec and cucumber
+#     - ie: './script/generate rspec' (& cucumber) have been run
+#
+
+# rails:rm_tmp_dirs
+["./tmp/pids", "./tmp/sessions", "./tmp/sockets", "./tmp/cache"].each do |f|
+  run("rmdir ./#{f}")
+end
+
+# Delete unnecessary files
+run "rm README"
+run "rm doc/README_FOR_APP"
+run "rm public/favicon.ico"
+run "rm public/robots.txt"
+
+# Remove test dir...this uses RSpec
+run "rm -rf test"
+
+# git:hold_empty_dirs
+run("find . \\( -type d -empty \\) -and \\( -not -regex ./\\.git.* \\) -exec touch {}/.gitignore \\;")
+
+# git:rails:new_app
+git :init
+
+file '.gitignore', <<-CODE
+log/*.log
+log/*.pid
+db/*.db
+db/*.sqlite3
+db/schema.rb
+tmp/**/*
+.DS_Store
+doc/api
+doc/app
+config/database.yml
+CODE
+
+run "cp config/database.yml config/database.yml.sample"
+
+# Migrate to create a db/schema.rb file
+rake "db:migrate"
+
+gem "term-ansicolor"
+gem "treetop"
+gem "nokogiri"
+gem "diff-lcs",    :lib => "diff/lcs"
+gem "builder"
+gem "ZenTest"
+gem "cucumber"
+gem "rspec",       :lib => "spec", :version => ">= 1.2.2"
+gem "rspec-rails", :lib => "spec/rails", :version => ">= 1.2.2"
+gem "webrat"
+
+rake("gems:install", :sudo => true) if yes?("Install gems on local system? (y/n)")
+
+# Initialize submodules
+git :submodule => "init"
+
+generate("rspec")
+generate("cucumber")
+
+git :add => "."
+
+git :commit => "-a -m 'Initial commit'"
