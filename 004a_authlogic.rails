@@ -1,0 +1,469 @@
+# Authlogic template
+#
+# Builds on top of:
+#   - 003_haml.rails
+#
+# Inherited setup:
+#   - Rails application directory structure initiliazed with git as the SCM system
+#   - Standard "ignored files" are added to '.gitignore' (.log, database.yml, etc)
+#   - Saved standard "empty" directories you want in your app
+#   - A base database.yml file set up to talk to Sqlite3
+#   - Removes unnecessary files...except index.html (README, et cetera)
+#   - A single "Initial commit" commit in your repository history
+#   - RSpec, rspec-rails, webrat, and cucumber gems
+#   - Builds the gems
+#   - Removes the test directory
+#   - App initialized for both rspec and cucumber
+#     - ie: './script/generate rspec' (& cucumber) have been run
+#
+# Added functionality/features:
+#   - Authlogic authentication plugin
+#   - generates a 'user_session' model (for authlogic session management)
+#   - generates a user model & migration with the default attributes
+#     for authlogic
+#     - includes 'magic column' attributes
+#     - runs the migration created
+#   - added a Session controller for logging in
+#     - added _very_ basic login form which redirects
+#       back to the homepage upon successful sign in
+#   - an 'exterior' controller with an 'index' action & view
+#     - intended solely for 'external' pages
+#   - a UsersController with #new & #create implemented
+#     - user is redirected to root path after creation
+#   - added a "map.root" definition pointing to ExteriorController#index
+#   - removes the default 'index.html' from public
+#
+
+
+# Helper methods
+
+# After the first run of ./script/server, the init file is missing
+# the "require 'rubygems'" line...we don't want to have to commit
+# that in or leave the repository in a dirty state after the first
+# "quick run"...
+def replace_default_haml_init
+  filename = "vendor/plugins/haml/init.rb"
+  run "rm -f #{filename}"
+  file filename,
+  %q{begin
+  require File.join(File.dirname(__FILE__), 'lib', 'haml') # From here
+rescue LoadError
+  require 'haml' # From gem
+end
+
+# Load Haml and Sass
+Haml.init_rails(binding)
+}
+end
+
+def replace_default_test_environment_config
+  filename = "config/environments/test.rb"
+  run "rm -f #{filename}"
+  file filename,
+  %q{# Settings specified here will take precedence over those in config/environment.rb
+config.gem 'webrat', :lib => false
+config.gem 'rspec-rails', :lib => false, :version => '>= 1.2.2'
+config.gem 'rspec', :lib => false, :version => '>= 1.2.2'
+config.gem 'cucumber'
+config.gem 'ZenTest'
+config.gem 'builder'
+config.gem 'diff-lcs', :lib => 'diff/lcs'
+config.gem 'nokogiri'
+config.gem 'treetop'
+config.gem 'term-ansicolor', :lib => 'term/ansicolor'
+
+# The test environment is used exclusively to run your application's
+# test suite.  You never need to work with it otherwise.  Remember that
+# your test database is "scratch space" for the test suite and is wiped
+# and recreated between test runs.  Don't rely on the data there!
+config.cache_classes = true
+
+# Log error messages when you accidentally call methods on nil.
+config.whiny_nils = true
+
+# Show full error reports and disable caching
+config.action_controller.consider_all_requests_local = true
+config.action_controller.perform_caching             = false
+config.action_view.cache_template_loading            = true
+
+# Disable request forgery protection in test environment
+config.action_controller.allow_forgery_protection    = false
+
+# Tell Action Mailer not to deliver emails to the real world.
+# The :test delivery method accumulates sent emails in the
+# ActionMailer::Base.deliveries array.
+config.action_mailer.delivery_method = :test
+
+# Use SQL instead of Active Record's schema dumper when creating the test database.
+# This is necessary if your schema can't be completely dumped by the schema dumper,
+# like if you have constraints or database-specific column types
+# config.active_record.schema_format = :sql
+}
+end
+
+def create_user_database_migration
+file "db/migrate/20090327020652_create_users.rb",
+%q{class CreateUsers < ActiveRecord::Migration
+  def self.up
+    create_table "users", :force => true do |t|
+      t.string    :login,               :null => false                # optional, you can use email instead, or both
+      t.string    :email,               :null => false, :default => ""
+      t.string    :perishable_token,    :null => false, :default => ""
+      t.string    :crypted_password,    :null => false
+      t.string    :password_salt,       :null => false                # optional, but highly recommended
+      t.string    :single_access_token, :null => false                # optional, see Authlogic::Session::Params
+      t.string    :perishable_token,    :null => false                # optional, see Authlogic::Session::Perishability
+      t.integer   :login_count,         :null => false, :default => 0 # optional, see Authlogic::Session::MagicColumns
+      t.integer   :failed_login_count,  :null => false, :default => 0 # optional, see Authlogic::Session::MagicColumns
+      t.datetime  :last_request_at                                    # optional, see Authlogic::Session::MagicColumns
+      t.datetime  :current_login_at                                   # optional, see Authlogic::Session::MagicColumns
+      t.datetime  :last_login_at                                      # optional, see Authlogic::Session::MagicColumns
+      t.string    :current_login_ip                                   # optional, see Authlogic::Session::MagicColumns
+      t.string    :last_login_ip                                      # optional, see Authlogic::Session::MagicColumns
+      t.timestamps
+    end
+
+    add_index :users, :login
+    add_index :users, :last_request_at
+    add_index :users, :perishable_token
+    add_index :users, :email
+  end
+
+  def self.down
+    drop_table :sessions
+  end
+end
+}
+end
+
+def add_authlogic_to_user_model
+file "app/models/user.rb",
+%q{class User < ActiveRecord::Base
+  acts_as_authentic
+end
+}
+end
+
+def replace_default_user_spec
+file "spec/models/user_spec.rb",
+  %q{require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
+  describe User do
+  end
+}
+end
+
+def generate_session_controller
+  generate "rspec_controller", "session"
+  filename = "app/controllers/session_controller.rb"
+  run "rm #{filename}"
+  file filename,
+  %q{class SessionController < ApplicationController
+  def new
+    @user_session = UserSession.new
+  end
+
+  def create
+    @user_session = UserSession.new(params[:user_session])
+    if @user_session.save
+      redirect_to root_path
+    else
+      render :action => :new
+    end
+  end
+
+  def destroy
+    current_user_session.destroy
+    redirect_to login_path
+  end
+end
+}
+end
+
+def generate_login_view
+  file "app/views/session/new.html.haml",
+  %q{- form_for @user_session, :url => session_path, :method => :post do |f|
+  = f.error_messages
+  %div
+    = f.label :login
+  %div
+    = f.text_field :login
+  %div
+    = f.label :password
+  %div
+    = f.password_field :password
+  %div
+    = f.submit "Login"
+}
+end
+
+def generate_home_page
+  run "rm -f app/views/exterior/index.html.erb"
+  file "app/views/exterior/index.html.haml",
+  %q{%div
+  - if logged_in?
+    Yes...it was really that easy. Now go write your app...
+  - else
+    Hello. Welcome to the future.
+    = link_to "Sign in", login_path
+    or
+    = link_to "Sign up", signup_path
+}
+end
+
+def replace_default_application_controller
+  file_name = "app/controllers/application_controller.rb"
+  run "rm -f #{file_name}"
+  file file_name,
+  %q{class ApplicationController < ActionController::Base
+  helper :all # include all helpers, all the time
+  protect_from_forgery # See ActionController::RequestForgeryProtection for details
+  helper_method :current_user_session, :current_user, :logged_in?
+
+  # Scrub sensitive parameters from your log
+  filter_parameter_logging :password, :password_confirmation
+
+  private
+    def current_user_session
+      return @current_user_session if defined?(@current_user_session)
+      @current_user_session = UserSession.find
+    end
+
+    def current_user
+      return @current_user if defined?(@current_user)
+      @current_user = current_user_session && current_user_session.record
+    end
+
+    def require_user
+      unless current_user
+        store_location
+        flash[:notice] = "You must be logged in to access this page"
+        redirect_to new_user_session_url
+        return false
+      end
+    end
+
+    def require_no_user
+      if current_user
+        store_location
+        flash[:notice] = "You must be logged out to access this page"
+        redirect_to account_url
+        return false
+      end
+    end
+
+    def store_location
+      session[:return_to] = request.request_uri
+    end
+
+    def redirect_back_or_default(default)
+      redirect_to(session[:return_to] || default)
+      session[:return_to] = nil
+    end
+
+    def logged_in?
+      !current_user.nil?
+    end
+end
+}
+end
+
+def generate_users_controller_and_spec
+  generate("rspec_controller", "users")
+  controller_file_name = "app/controllers/users_controller.rb"
+  controller_spec_file_name = "spec/controllers/users_controller_spec.rb"
+  run "rm -f #{controller_file_name}"
+  file controller_file_name,
+  %q{class UsersController < ApplicationController
+  def new
+    @user = User.new
+  end
+
+  def create
+    @user = User.new(params[:user])
+    if @user.save
+      redirect_to root_path
+    else
+      render :action => :new
+    end
+  end
+end
+}
+
+  run "rm -f #{controller_spec_file_name}"
+  file controller_spec_file_name,
+  %q{require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
+
+describe UsersController do
+  before(:each) do
+    @user = mock_model(User)
+  end
+
+  context "a GET to new" do
+    it "assigns a user object for the view template" do
+      User.stub!(:new).and_return(@user)
+      get :new
+      assigns(:user).should == @user
+    end
+  end
+
+  context "a POST to create" do
+    before(:each) do
+      @user_params = mock("Params for new user")
+      User.stub!(:new).with(@user_params).and_return(@user)
+      @user.stub!(:save)
+    end
+
+    def do_post
+      post :create, :user => @user_params
+    end
+
+    it "initializes a new user object with the supplied parameters" do
+      do_post
+      assigns(:user).should == @user
+    end
+
+    it "saves the user object" do
+      @user.should_receive(:save)
+      do_post
+    end
+
+    context "with valid attributes" do
+      before(:each) do
+        @user.stub!(:save).and_return(true)
+      end
+
+      it "redirects to the home page" do
+        do_post
+        response.should redirect_to(root_path)
+      end
+    end
+
+    context "with valid attributes" do
+      before(:each) do
+        @user.stub!(:save).and_return(false)
+      end
+
+      it "renders the signup form again" do
+        do_post
+        response.should render_template('users/new')
+      end
+    end
+  end
+end
+}
+end
+
+def generate_new_user_view
+  file "app/views/users/new.html.haml",
+  %q{%h1 Setting up a new account
+- form_for @user do |f|
+  %div
+    = f.label :login
+    = f.text_field :login
+  %div
+    = f.label :password
+    = f.password_field :password
+  %div
+    = f.label :password_confirmation
+    = f.password_field :password_confirmation
+  %div
+    = submit_tag "Sign up"
+}
+end
+
+# rails:rm_tmp_dirs
+["./tmp/pids", "./tmp/sessions", "./tmp/sockets", "./tmp/cache"].each do |f|
+  run("rmdir ./#{f}")
+end
+
+# Delete unnecessary files
+run "rm README"
+run "rm doc/README_FOR_APP"
+run "rm public/favicon.ico"
+run "rm public/robots.txt"
+run "rm public/index.html"
+
+# Remove test dir...this uses RSpec
+run "rm -rf test"
+
+# git:hold_empty_dirs
+run("find . \\( -type d -empty \\) -and \\( -not -regex ./\\.git.* \\) -exec touch {}/.gitignore \\;")
+
+# git:rails:new_app
+git :init
+
+file '.gitignore', <<-CODE
+log/*.log
+log/*.pid
+db/*.db
+db/*.sqlite3
+db/schema.rb
+tmp/**/*
+.DS_Store
+doc/api
+doc/app
+config/database.yml
+CODE
+
+run "cp config/database.yml config/database.yml.sample"
+
+# Install the following gem entries in config/environment.rb
+# NOTE: Do not put test environment-only gem dependencies here
+gem "haml"
+gem "authlogic"
+
+# Add in test environment-specific gems & config
+replace_default_test_environment_config
+
+if yes?("Install gems on local system? (y/n)")
+  rake("gems:install", :sudo => true)
+  rake("gems:install", :sudo => true, :env => "test")
+end
+
+# Initialize submodules
+git :submodule => "init"
+
+# Generate RSpec & cucumber support/directory system
+generate("rspec")
+generate("cucumber")
+
+
+generate("session", "user_session")
+generate("rspec_model", "user")
+generate("rspec_controller", "exterior", "index")
+run "rm -f spec/views/exterior/index.html.erb_spec.rb"
+
+route "map.resource :session, :controller => 'session'"
+route "map.login  '/login',  :controller => 'session', :action => 'new', :method => :get"
+route "map.logout '/logout', :controller => 'session', :action => 'destroy', :method => :delete"
+route "map.root :controller => 'exterior'"
+
+# Delete the migration that was just generated so we can replace it
+run "rm db/migrate/*create_user*.rb"
+
+# replace the migration and migrate the database
+create_user_database_migration
+rake "db:migrate"
+rake "db:test:prepare"
+
+add_authlogic_to_user_model
+replace_default_user_spec
+
+# Create a controller with basic views for logging in & out
+generate_session_controller
+generate_login_view
+generate_users_controller_and_spec
+generate_new_user_view
+generate_home_page
+replace_default_application_controller
+
+route "map.resources :users"
+route "map.signup '/signup',  :controller => 'users', :action => 'new', :method => :get"
+
+# Initialize haml in project
+run "haml --rails ."
+replace_default_haml_init
+
+git :add => "."
+
+git :commit => "-a -m 'Initial commit'"
