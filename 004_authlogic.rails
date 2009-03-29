@@ -1,0 +1,1125 @@
+# Authlogic template
+#
+# Builds on top of:
+#   - 003_haml.rails
+#
+# Inherited setup:
+#   - Rails application directory structure initiliazed with git as the SCM system
+#   - Standard "ignored files" are added to '.gitignore' (.log, database.yml, etc)
+#   - Saved standard "empty" directories you want in your app
+#   - A base database.yml file set up to talk to Sqlite3
+#   - Removes unnecessary files...except index.html (README, et cetera)
+#   - A single "Initial commit" commit in your repository history
+#   - RSpec, rspec-rails, webrat, and cucumber gems
+#   - Builds the gems
+#   - Removes the test directory
+#   - App initialized for both rspec and cucumber
+#     - ie: './script/generate rspec' (& cucumber) have been run
+#
+# Added functionality/features:
+#   - Authlogic authentication plugin
+#   - generates a 'user_session' model (for authlogic session management)
+#   - generates a user model & migration with the default attributes
+#     for authlogic
+#     - includes 'magic column' attributes
+#     - runs the migration created
+#   - added a Session controller for logging in
+#     - added _very_ basic login form which redirects
+#       back to the homepage upon successful sign in
+#   - Secure 'Forgot your email' implementation with specs
+#   - an 'exterior' controller with an 'index' action & view
+#     - intended solely for 'external' pages
+#   - a UsersController with #new & #create implemented
+#     - user is redirected to root path after creation
+#   - added a "map.root" definition pointing to ExteriorController#index
+#   - removes the default 'index.html' from public
+#
+
+
+# Helper methods
+
+# After the first run of ./script/server, the init file is missing
+# the "require 'rubygems'" line...we don't want to have to commit
+# that in or leave the repository in a dirty state after the first
+# "quick run"...
+def replace_default_haml_init
+  filename = "vendor/plugins/haml/init.rb"
+  run "rm -f #{filename}"
+  file filename,
+  %q{begin
+  require File.join(File.dirname(__FILE__), 'lib', 'haml') # From here
+rescue LoadError
+  require 'haml' # From gem
+end
+
+# Load Haml and Sass
+Haml.init_rails(binding)
+}
+end
+
+def replace_default_test_environment_config
+  filename = "config/environments/test.rb"
+  run "rm -f #{filename}"
+  file filename,
+  %q{# Settings specified here will take precedence over those in config/environment.rb
+config.gem 'webrat', :lib => false
+config.gem 'rspec-rails', :lib => false, :version => '>= 1.2.2'
+config.gem 'rspec', :lib => false, :version => '>= 1.2.2'
+config.gem 'cucumber'
+config.gem 'ZenTest'
+config.gem 'builder'
+config.gem 'diff-lcs', :lib => 'diff/lcs'
+config.gem 'nokogiri'
+config.gem 'treetop'
+config.gem 'term-ansicolor', :lib => 'term/ansicolor'
+config.gem 'thoughtbot-factory_girl', :lib => 'factory_girl', :source => 'http://gems.github.com'
+config.gem 'bmabey-email_spec', :lib => 'email_spec', :source => 'http://gems.github.com'
+
+# The test environment is used exclusively to run your application's
+# test suite.  You never need to work with it otherwise.  Remember that
+# your test database is "scratch space" for the test suite and is wiped
+# and recreated between test runs.  Don't rely on the data there!
+config.cache_classes = true
+
+# Log error messages when you accidentally call methods on nil.
+config.whiny_nils = true
+
+# Show full error reports and disable caching
+config.action_controller.consider_all_requests_local = true
+config.action_controller.perform_caching             = false
+config.action_view.cache_template_loading            = true
+
+# Disable request forgery protection in test environment
+config.action_controller.allow_forgery_protection    = false
+
+# Tell Action Mailer not to deliver emails to the real world.
+# The :test delivery method accumulates sent emails in the
+# ActionMailer::Base.deliveries array.
+config.action_mailer.delivery_method = :test
+
+# Use SQL instead of Active Record's schema dumper when creating the test database.
+# This is necessary if your schema can't be completely dumped by the schema dumper,
+# like if you have constraints or database-specific column types
+# config.active_record.schema_format = :sql
+
+config.action_mailer.default_url_options = {:host => 'localhost'}
+}
+end
+
+def create_user_database_migration
+file "db/migrate/20090327020652_create_users.rb",
+%q{class CreateUsers < ActiveRecord::Migration
+  def self.up
+    create_table "users", :force => true do |t|
+      t.string    :login,               :null => false                # optional, you can use email instead, or both
+      t.string    :email,               :null => false, :default => ""
+      t.string    :perishable_token,    :null => false, :default => ""
+      t.string    :crypted_password,    :null => false
+      t.string    :password_salt,       :null => false                # optional, but highly recommended
+      t.string    :single_access_token, :null => false                # optional, see Authlogic::Session::Params
+      t.string    :persistence_token,   :null => false                # optional, see Authlogic::Session::Perishability
+      t.integer   :login_count,         :null => false, :default => 0 # optional, see Authlogic::Session::MagicColumns
+      t.integer   :failed_login_count,  :null => false, :default => 0 # optional, see Authlogic::Session::MagicColumns
+      t.datetime  :last_request_at                                    # optional, see Authlogic::Session::MagicColumns
+      t.datetime  :current_login_at                                   # optional, see Authlogic::Session::MagicColumns
+      t.datetime  :last_login_at                                      # optional, see Authlogic::Session::MagicColumns
+      t.string    :current_login_ip                                   # optional, see Authlogic::Session::MagicColumns
+      t.string    :last_login_ip                                      # optional, see Authlogic::Session::MagicColumns
+      t.timestamps
+    end
+
+    add_index :users, :login
+    add_index :users, :last_request_at
+    add_index :users, :perishable_token
+    add_index :users, :email
+  end
+
+  def self.down
+    drop_table :users
+  end
+end
+}
+end
+
+def add_authlogic_to_user_model
+  file "app/models/user.rb",
+  %q{class User < ActiveRecord::Base
+  acts_as_authentic
+
+  def deliver_password_reset_instructions!
+    reset_perishable_token!
+    Notifier.deliver_password_reset_instructions(self)
+  end
+end
+}
+end
+
+def replace_default_user_spec
+  file_name = "spec/models/user_spec.rb"
+  run "rm #{file_name}"
+  file file_name,
+  %q{require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
+describe User do
+  context "deliver_password_reset_instructions!" do
+    before(:each) do
+      @typical_user = Factory(:typical_user)
+    end
+
+    it "resets the user's perishable token" do
+      @typical_user.should_receive(:reset_perishable_token!)
+      @typical_user.deliver_password_reset_instructions!
+    end
+
+    it "sends an email to the user with instructions on how to reset their password" do
+      Notifier.should_receive(:deliver_password_reset_instructions).with(@typical_user)
+      @typical_user.deliver_password_reset_instructions!
+    end
+  end
+end
+}
+end
+
+def generate_session_controller
+  generate "rspec_controller", "session"
+  file_name = "app/controllers/session_controller.rb"
+  run "rm #{file_name}"
+  file file_name,
+  %q{class SessionController < ApplicationController
+  before_filter :require_no_user, :only => [:new, :create]
+  before_filter :require_user, :only => :destroy
+
+  def new
+    @user_session = UserSession.new
+  end
+
+  def create
+    @user_session = UserSession.new(params[:user_session])
+    if @user_session.save
+      redirect_to root_path
+    else
+      render :action => :new
+    end
+  end
+
+  def destroy
+    current_user_session.destroy
+    redirect_to login_path
+  end
+
+  def confirm_logout
+  end
+end
+}
+end
+
+def generate_logout_confirmation_page
+  file "app/views/session/confirm_logout.html.haml",
+  %q{%h1 Logout confirmation
+%p
+  You must be logged out to view the page requested.
+%p
+  Are you sure you want to log out?
+  %ul
+    %li= link_to "Yes, log me out", logout_path, :id => :logout_confirmation
+    %li= link_to "No, take me back to the home page", root_path, :id => :cancel_and_go_home
+}
+
+end
+
+def generate_login_view
+  file "app/views/session/new.html.haml",
+  %q{- form_for @user_session, :url => session_path, :method => :post do |f|
+  = f.error_messages
+  %div
+    = f.label :login
+  %div
+    = f.text_field :login
+  %div
+    = f.label :password
+  %div
+    = f.password_field :password
+  %div
+    = f.submit "Login"
+    = link_to "Forget your password?", new_support_password_reset_request_path
+}
+end
+
+def generate_home_page
+  run "rm -f app/views/exterior/index.html.erb"
+  file "app/views/exterior/index.html.haml",
+  %q{- unless flash.empty?
+  #flash
+    - flash.each do |type, text|
+      %div{:id => "flash_#{type}"}
+        =h text
+
+%div
+  - if logged_in?
+    Yes...it was really that easy. Now go write your app...
+    = link_to "[ Logout ]", logout_path
+  - else
+    Hello. Welcome to the future.
+    = link_to "Sign in", login_path
+    or
+    = link_to "Sign up", signup_path
+}
+end
+
+def replace_default_application_controller
+  file_name = "app/controllers/application_controller.rb"
+  run "rm -f #{file_name}"
+  file file_name,
+  %q{class ApplicationController < ActionController::Base
+  helper :all # include all helpers, all the time
+  protect_from_forgery # See ActionController::RequestForgeryProtection for details
+  helper_method :current_user_session, :current_user, :logged_in?
+
+  # Scrub sensitive parameters from your log
+  filter_parameter_logging :password, :password_confirmation
+
+  private
+    def current_user_session
+      return @current_user_session if defined?(@current_user_session)
+      @current_user_session = UserSession.find
+    end
+
+    def current_user
+      return @current_user if defined?(@current_user)
+      @current_user = current_user_session && current_user_session.record
+    end
+
+    def require_user
+      unless current_user
+        store_location
+        flash[:notice] = "You must be logged in to access this page"
+        redirect_to new_session_path
+        return false
+      end
+    end
+
+    def require_no_user
+      if current_user
+        store_location
+        flash[:notice] = "You must be logged out to access this page"
+        redirect_to confirm_logout_path
+        return false
+      end
+    end
+
+    def store_location
+      session[:return_to] = request.request_uri
+    end
+
+    def redirect_back_or_default(default)
+      redirect_to(session[:return_to] || default)
+      session[:return_to] = nil
+    end
+
+    def logged_in?
+      !current_user.nil?
+    end
+end
+}
+end
+
+def generate_users_controller_and_spec
+  generate("rspec_controller", "users")
+  controller_file_name = "app/controllers/users_controller.rb"
+  controller_spec_file_name = "spec/controllers/users_controller_spec.rb"
+  run "rm -f #{controller_file_name}"
+  file controller_file_name,
+  %q{class UsersController < ApplicationController
+  before_filter :require_no_user, :only => [:new, :create]
+
+  def new
+    @user = User.new
+  end
+
+  def create
+    @user = User.new(params[:user])
+    if @user.save
+      redirect_to root_path
+    else
+      render :action => :new
+    end
+  end
+end
+}
+
+  run "rm -f #{controller_spec_file_name}"
+  file controller_spec_file_name,
+  %q{require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
+
+describe UsersController do
+  before(:each) do
+    @user = mock_model(User)
+  end
+
+  context "a GET to new" do
+    it "assigns a user object for the view template" do
+      User.stub!(:new).and_return(@user)
+      get :new
+      assigns(:user).should == @user
+    end
+  end
+
+  context "a POST to create" do
+    before(:each) do
+      @user_params = mock("Params for new user")
+      User.stub!(:new).with(@user_params).and_return(@user)
+      @user.stub!(:save)
+    end
+
+    def do_post
+      post :create, :user => @user_params
+    end
+
+    it "initializes a new user object with the supplied parameters" do
+      do_post
+      assigns(:user).should == @user
+    end
+
+    it "saves the user object" do
+      @user.should_receive(:save)
+      do_post
+    end
+
+    context "with valid attributes" do
+      before(:each) do
+        @user.stub!(:save).and_return(true)
+      end
+
+      it "redirects to the home page" do
+        do_post
+        response.should redirect_to(root_path)
+      end
+    end
+
+    context "with valid attributes" do
+      before(:each) do
+        @user.stub!(:save).and_return(false)
+      end
+
+      it "renders the signup form again" do
+        do_post
+        response.should render_template('users/new')
+      end
+    end
+  end
+end
+}
+end
+
+def generate_new_user_view
+  file "app/views/users/new.html.haml",
+  %q{%h1 Setting up a new account
+- form_for @user do |f|
+  %div
+    = f.label :email
+    = f.text_field :email
+  %div
+    = f.label :login
+    = f.text_field :login
+  %div
+    = f.label :password
+    = f.password_field :password
+  %div
+    = f.label :password_confirmation
+    = f.password_field :password_confirmation
+  %div
+    = submit_tag "Sign up"
+}
+end
+
+# Used this instead of 'routes' commands because I
+# could not figure out a way to use namespaces with
+# templates.
+def replace_routes_file
+  file_name = "config/routes.rb"
+  run "rm #{file_name}"
+  file file_name,
+  %q{ActionController::Routing::Routes.draw do |map|
+  map.signup '/signup',  :controller => 'users', :action => 'new', :method => :get
+  map.confirm_logout '/logout/confirm', :controller => 'session', :action => 'confirm_logout', :method => :get
+  map.logout '/logout', :controller => 'session', :action => 'destroy', :method => :delete
+  map.login  '/login',  :controller => 'session', :action => 'new', :method => :get
+
+
+  map.resources :users
+  map.resource :session, :controller => 'session'
+  map.root :controller => 'exterior'
+
+  map.namespace :support do |support|
+    support.resource :password_reset_request, :controller => "PasswordResetRequest"
+  end
+
+  # For some reason these seem to be required for RSpec to recognize namespaced
+  # routes correctly
+  map.connect ':controller/:action/:id'
+  map.connect ':controller/:action/:id.:format'
+end
+}
+end
+
+def update_spec_helper_and_add_factories
+  run "rm spec/spec_helper.rb"
+  file "spec/spec_helper.rb",
+  %q{# This file is copied to ~/spec when you run 'ruby script/generate rspec'
+# from the project root directory.
+ENV["RAILS_ENV"] ||= 'test'
+require File.dirname(__FILE__) + "/../config/environment" unless defined?(RAILS_ROOT)
+require 'spec/autorun'
+require 'spec/rails'
+require File.expand_path(File.dirname(__FILE__) + '/factories')
+
+# This simplifies testing mailers with RSpec
+# Read more here: http://github.com/bmabey/email-spec/tree/master
+require "email_spec/helpers"
+require "email_spec/matchers"
+
+Spec::Runner.configure do |config|
+  # If you're not using ActiveRecord you should remove these
+  # lines, delete config/database.yml and disable :active_record
+  # in your config/boot.rb
+  config.use_transactional_fixtures = true
+  config.use_instantiated_fixtures  = false
+  config.fixture_path = RAILS_ROOT + '/spec/fixtures/'
+
+  # == Fixtures
+  #
+  # You can declare fixtures for each example_group like this:
+  #   describe "...." do
+  #     fixtures :table_a, :table_b
+  #
+  # Alternatively, if you prefer to declare them only once, you can
+  # do so right here. Just uncomment the next line and replace the fixture
+  # names with your fixtures.
+  #
+  # config.global_fixtures = :table_a, :table_b
+  #
+  # If you declare global fixtures, be aware that they will be declared
+  # for all of your examples, even those that don't use them.
+  #
+  # You can also declare which fixtures to use (for example fixtures for test/fixtures):
+  #
+  # config.fixture_path = RAILS_ROOT + '/spec/fixtures/'
+  #
+  # == Mock Framework
+  #
+  # RSpec uses it's own mocking framework by default. If you prefer to
+  # use mocha, flexmock or RR, uncomment the appropriate line:
+  #
+  # config.mock_with :mocha
+  # config.mock_with :flexmock
+  # config.mock_with :rr
+  #
+  # == Notes
+  # 
+  # For more information take a look at Spec::Runner::Configuration and Spec::Runner
+
+  # This simplifies testing mailers with RSpec
+  # Read more here: http://github.com/bmabey/email-spec/tree/master
+  config.include(EmailSpec::Helpers)
+  config.include(EmailSpec::Matchers)
+end
+}
+
+  run "rm spec/factories.rb"
+  file "spec/factories.rb",
+  %q[Factory.sequence :email do |n|
+  "standard_user_#{n}@example.com"
+end
+
+Factory.sequence :login do |n|
+  "standard_user_#{n}"
+end
+
+Factory.define :typical_user, :class => User do |f|
+  f.email { Factory.next(:email) }
+  f.login { Factory.next(:login) }
+  f.password 'password'
+  f.password_confirmation 'password'
+end
+]
+end
+
+def add_notifier_spec
+  file "spec/models/notifier_spec.rb",
+  %q[require File.dirname(__FILE__) + '/../spec_helper'
+
+describe Notifier do
+  include ActionController::UrlWriter
+  before(:each) do
+    @host = "example.com"
+  end
+
+  before(:all) do
+    @user = User.new(:login => "user_1", :password => "tester", :password_confirmation => "password", :email => "jdoe@example.com")
+  end
+
+  context "emailing password reset instructions" do
+    before(:each) do
+      @notification = Notifier.create_password_reset_instructions(@user)
+    end
+
+    subject {@notification}
+
+    it "delivers the message to the supplied user's email" do
+      should deliver_to(@user.email)
+    end
+
+    it "should contain a link to the confirmation page" do
+      should have_body_text(/#{edit_support_password_reset_request_url(:host => @host)}/)
+    end
+  end
+end
+]
+end
+
+def add_notifier_model
+  file "app/models/notifier.rb",
+  %q{class Notifier < ActionMailer::Base
+  default_url_options[:host] = "example.com"
+
+  def password_reset_instructions(user)
+    subject       "How to reset your password..."
+    from          "Admin <noreply@#{default_url_options[:host]}>"
+    recipients    user.email
+    sent_on       Time.now
+    body          :edit_support_password_reset_request_url => edit_support_password_reset_request_url(:id => user.perishable_token)
+  end
+end
+}
+end
+
+def add_view_for_password_reset_instructions
+  file "app/views/notifier/password_reset_instructions.html.haml",
+  %q{A request to reset your password has been made.
+If you did not make this request, simply ignore this email.
+If you did make this request just click the link below:
+
+= @edit_support_password_reset_request_url
+
+If the above URL does not work try copying and pasting it into your browser.
+If you continue to have problem please feel free to contact us.
+}
+end
+
+def add_password_reset_request_views
+  file "app/views/support/password_reset_request/new.html.haml",
+  %q{%h1 Send me a link to reset my password
+- if flash[:error]
+  .error
+    = flash[:error]
+
+- form_for User.new, :url => support_password_reset_request_path, :method => :post, :html => {:id => :new_reset_password_request, :class => nil} do |f|
+  = f.label :email
+  = f.text_field :email
+  = submit_tag "Submit"
+}
+
+  file "app/views/support/password_reset_request/edit.html.haml",
+  %q{%h1 Change My Password
+
+- form_for @user, :url => support_password_reset_request_path(:id => params[:id]), :method => :put do |f|
+  - if f.error_messages
+    .error
+    = f.error_messages
+  %div
+    = f.label :password
+    = f.password_field :password
+  %div
+    = f.label :password_confirmation
+    = f.password_field :password_confirmation
+  %div
+    = f.submit "Update my password and log me in"
+}
+end
+
+def add_password_reset_request_controller_spec
+  file "spec/controllers/support/password_reset_request_controller_spec.rb",
+  %q{require File.expand_path(File.dirname(__FILE__) + '/../../spec_helper')
+
+describe Support::PasswordResetRequestController do
+  before(:each) do
+    @user = mock_model(User, :email => "jdoe@example.com")
+  end
+
+  shared_examples_for "Any perishable token request" do
+    it "looks up the user using the supplied perishable token" do
+      User.should_receive(:find_using_perishable_token).with(@token)
+      perform_request
+    end
+  end
+
+  shared_examples_for "Any invalid perishable token request" do
+    it "redirects to the home page" do
+      perform_request
+      response.should redirect_to(root_path)
+    end
+
+    it "notifies the user that their request failed" do
+      perform_request
+      flash[:error].should_not be_nil
+    end
+  end
+
+  context "a GET to new" do
+    it "renders the 'new' template" do
+      get :new
+      response.should render_template('support/password_reset_request/new')
+    end
+  end
+
+  context "a POST to create" do
+    def make_request
+      post :create, :user => {:email => @user.email}
+    end
+
+    context "with an email that exists in the system" do
+      before(:each) do
+        User.stub!(:find_by_email).with(@user.email).and_return(@user)
+        @user.stub!(:deliver_password_reset_instructions!)
+      end
+
+      it "delivers the password reset instructions to the user" do
+        @user.should_receive(:deliver_password_reset_instructions!)
+        make_request
+      end
+
+      it "redirects to the home page" do
+        make_request
+        response.should redirect_to(root_path)
+      end
+
+      it "notifies the user to check their email" do
+        make_request
+        flash[:notice].should_not be_nil
+      end
+    end
+
+    context "with an email that does not exist in the system" do
+      before(:each) do
+        User.stub!(:find_by_email).and_return(nil)
+      end
+
+      it "notifies the user that the email does not exist" do
+        make_request
+        flash[:error].should_not be_nil
+      end
+
+      it "renders the password reset request form again" do
+        make_request
+        response.should render_template('support/password_reset_request/new')
+      end
+    end
+  end
+
+  context "a GET to edit" do
+    before(:each) do
+      @token = mock("User's perishable token")
+    end
+
+    def perform_request
+      get :edit, :id => @token
+    end
+
+    it_should_behave_like "Any perishable token request"
+
+    context "with a valid token" do
+      before(:each) do
+        User.stub!(:find_using_perishable_token).and_return(@user)
+      end
+
+      it "renders the reset password form" do
+        perform_request
+        response.should render_template('support/password_reset_request/edit')
+      end
+    end
+
+    context "with an invalid token" do
+      before(:each) do
+        User.stub!(:find_using_perishable_token).and_return(nil)
+      end
+      it_should_behave_like "Any invalid perishable token request"
+    end
+  end
+
+  context "a PUT to update" do
+    def perform_request
+      put :update, :id => @token, :user => {:password => @password, :password_confirmation => @password}
+    end
+
+    context "with a valid token" do
+      before(:each) do
+        @token = mock("User's perishable token")
+        @password = mock("The password the user supplied")
+        User.stub!(:find_using_perishable_token).with(@token).and_return(@user)
+        @user.stub!(:save)
+        @user.stub!(:password=).with(@password)
+        @user.stub!(:password_confirmation=).with(@password)
+      end
+
+      it "updates the user's password with the supplied information" do
+        @user.should_receive(:password=).with(@password)
+        @user.should_receive(:password_confirmation=).with(@password)
+        perform_request
+      end
+
+      it "saves the user" do
+        @user.should_receive(:save)
+        perform_request
+      end
+
+      context "and password" do
+        before(:each) do
+          @user.stub!(:save).and_return(true)
+        end
+
+        it "notifies them that their password was updated" do
+          perform_request
+          flash[:notice].should_not be_nil
+        end
+
+        it "redirects back to the home page" do
+          perform_request
+          response.should redirect_to(root_path)
+        end
+      end
+
+      context "but an invalid password" do
+        before(:each) do
+          @user.stub!(:save).and_return(false)
+        end
+
+        it "notifies them that their password was updated" do
+          perform_request
+          flash[:error].should_not be_nil
+        end
+
+        it "renders the reset password form" do
+          perform_request
+          response.should render_template('support/password_reset_request/edit')
+        end
+      end
+    end
+
+    context "with an invalid token" do
+      before(:each) do
+        User.stub!(:find_using_perishable_token).and_return(nil)
+      end
+
+      it_should_behave_like "Any invalid perishable token request"
+
+      it "does not update the password or save the user" do
+        @user.should_not_receive(:password)
+        @user.should_not_receive(:password_confirmation)
+        @user.should_not_receive(:save)
+        perform_request
+      end
+    end
+  end
+end
+}
+end
+
+def add_password_reset_request_controller
+  file "app/controllers/support/password_reset_request_controller.rb",
+  %q{class Support::PasswordResetRequestController < ApplicationController
+  before_filter :require_no_user
+
+  def new
+    render
+  end
+
+  def create
+    @user = User.find_by_email(supplied_email)
+    if @user
+      @user.deliver_password_reset_instructions!
+      flash[:notice] = "We have emailed you a link to reset your password which expires in 10 minutes. "
+      flash[:notice] += "Don't worry if you can't get to it right away...you can restart this process as many times as you need to."
+      redirect_to root_url
+    else
+      flash[:error] = "No user was found with that email address"
+      render :action => :new
+    end
+  end
+
+  def edit
+    unless user_found_using_perishable_token
+      deny_request_and_send_to_home_page
+    end
+  end
+
+  def update
+    if user_not_found_using_perishable_token
+      deny_request_and_send_to_home_page && return
+    end
+
+    @user.password = params[:user][:password]
+    @user.password_confirmation = params[:user][:password_confirmation]
+    if @user.save
+      flash[:notice] = "Password successfully updated"
+      redirect_to root_path
+    else
+      flash[:error] = "Your password was not updated."
+      render :action => :edit
+    end
+  end
+
+  private
+    def supplied_email
+      params[:user] && params[:user][:email]
+    end
+
+    def user_found_using_perishable_token
+      @user ||= User.find_using_perishable_token(params[:id])
+    end
+
+    def user_not_found_using_perishable_token
+      user_found_using_perishable_token.nil?
+    end
+
+    def deny_request_and_send_to_home_page
+      flash[:error] = "We're sorry, but we could not locate your account. " +
+        "If you are having issues try copying and pasting the URL " +
+        "from your email into your browser or restarting the " +
+        "reset password process."
+      redirect_to root_url
+    end
+end
+}
+end
+
+def add_gem_for_testing_email
+  file "features/support/env.rb",
+  %q{# Sets up the Rails environment for Cucumber
+ENV["RAILS_ENV"] = "test"
+require File.expand_path(File.dirname(__FILE__) + '/../../config/environment')
+require 'cucumber/rails/world'
+require 'cucumber/formatters/unicode' # Comment out this line if you don't want Cucumber Unicode support
+
+# This adds support for email matchers in cucumber
+# Read more here: http://github.com/bmabey/email-spec/tree/master
+require 'email_spec/cucumber'
+
+Cucumber::Rails.use_transactional_fixtures
+
+require 'webrat'
+
+Webrat.configure do |config|
+  config.mode = :rails
+end
+
+# Comment out the next two lines if you're not using RSpec's matchers (should / should_not) in your steps.
+require 'cucumber/rails/rspec'
+require 'webrat/rspec-rails'
+}
+end
+
+def add_email_cucumber_step_definitions
+  file "features/step_definitions/email_steps.rb",
+  %q{#Commonly used email steps
+#
+# To add your own steps make a custom_email_steps.rb
+# The provided methods are:
+#
+# reset_mailer
+# open_last_email
+# visit_in_email
+# unread_emails_for
+# mailbox_for
+# current_email
+# open_email
+# read_emails_for
+# find_email
+
+module EmailHelpers
+  def current_email_address
+    "quentin@example.com" # Replace with your a way to find your current_email. e.g current_user.email
+  end
+end
+World {|world| world.extend EmailHelpers }
+
+# Use this step to reset the e-mail queue within a scenario.
+# This is done automatically before each scenario.
+Given /^(?:a clear email queue|no emails have been sent)$/ do
+  reset_mailer
+end
+
+# Use this step to open the most recently sent e-mail. 
+When /^I open the email$/ do
+  open_email(current_email_address)
+end
+
+When /^I follow "(.*)" in the email$/ do |link|
+  visit_in_email(link)
+end
+
+Then /^I should receive (an|\d+) emails?$/ do |amount|
+  amount = 1 if amount == "an"
+  unread_emails_for(current_email_address).size.should == amount.to_i
+end
+
+Then /^"([^']*?)" should receive (\d+) emails?$/ do |address, n|
+  unread_emails_for(address).size.should == n.to_i 
+end
+
+Then /^"([^']*?)" should have (\d+) emails?$/ do |address, n|
+  mailbox_for(address).size.should == n.to_i
+end
+
+Then /^"([^']*?)" should not receive an email$/ do |address|
+  find_email(address).should be_nil
+end
+
+Then /^I should see "(.*)" in the subject$/ do |text|
+  current_email.should have_subject(Regexp.new(text))
+end
+
+Then /^I should see "(.*)" in the email$/ do |text|
+  current_email.body.should =~ Regexp.new(text)
+end
+
+When %r{^"([^']*?)" opens? the email with subject "([^']*?)"$} do |address, subject|
+  open_email(address, :with_subject => subject)
+end
+
+When %r{^"([^']*?)" opens? the email with text "([^']*?)"$} do |address, text|
+  open_email(address, :with_text => text)
+end
+
+When /^I click the first link in the email$/ do
+  click_first_link_in_email
+end
+}
+end
+
+def add_password_reset_support
+  add_password_reset_request_controller_and_spec
+  add_password_reset_request_views
+end
+
+def update_cucumber
+  add_gem_for_testing_email
+  add_email_cucumber_step_definitions
+end
+
+# Adds:
+# - app/models/notifier.rb
+# - spec/models/notifier_spec.rb
+# - app/views/notifier/password_reset_instructions.html.haml
+def add_notifier_mailer_and_specs
+  add_notifier_spec
+  add_notifier_model
+  add_view_for_password_reset_instructions
+  run "mkdir -p app/controllers/support"
+  run "mkdir -p app/views/support/password_reset_request"
+end
+
+def add_password_reset_request_controller_and_spec
+  add_password_reset_request_controller
+  add_password_reset_request_controller_spec
+end
+
+####### TEMPLATE STARTS HERE
+# rails:rm_tmp_dirs
+["./tmp/pids", "./tmp/sessions", "./tmp/sockets", "./tmp/cache"].each do |f|
+  run("rmdir ./#{f}")
+end
+
+# Delete unnecessary files
+run "rm README"
+run "rm doc/README_FOR_APP"
+run "rm public/favicon.ico"
+run "rm public/robots.txt"
+run "rm public/index.html"
+
+# Remove test dir...this uses RSpec
+run "rm -rf test"
+
+# git:hold_empty_dirs
+run("find . \\( -type d -empty \\) -and \\( -not -regex ./\\.git.* \\) -exec touch {}/.gitignore \\;")
+
+# git:rails:new_app
+git :init
+
+file '.gitignore', <<-CODE
+log/*.log
+log/*.pid
+db/*.db
+db/*.sqlite3
+db/schema.rb
+tmp/**/*
+.DS_Store
+doc/api
+doc/app
+config/database.yml
+CODE
+
+run "cp config/database.yml config/database.yml.sample"
+
+# Install the following gem entries in config/environment.rb
+# NOTE: Do not put test environment-only gem dependencies here
+gem "haml"
+gem "authlogic"
+
+# Add in test environment-specific gems & config
+replace_default_test_environment_config
+
+if yes?("Install gems on local system? (y/n)")
+  rake("gems:install", :sudo => true)
+  rake("gems:install", :sudo => true, :env => "test")
+end
+
+# Initialize submodules
+git :submodule => "init"
+
+# Generate RSpec & cucumber support/directory system
+generate("rspec")
+generate("cucumber")
+
+
+generate("session", "user_session")
+generate("rspec_model", "user")
+generate("rspec_controller", "exterior", "index")
+run "rm -f spec/views/exterior/index.html.erb_spec.rb"
+
+# Put in an updated routes file for all the changes
+replace_routes_file
+
+# Delete the migration that was just generated so we can replace it
+run "rm db/migrate/*create_user*.rb"
+
+# replace the migration and migrate the database
+create_user_database_migration
+rake "db:migrate"
+rake "db:test:prepare"
+
+add_authlogic_to_user_model
+replace_default_user_spec
+update_spec_helper_and_add_factories
+add_notifier_mailer_and_specs
+add_password_reset_support
+
+# Create a controller with basic views for logging in & out
+generate_session_controller
+generate_login_view
+generate_logout_confirmation_page
+generate_users_controller_and_spec
+generate_new_user_view
+generate_home_page
+replace_default_application_controller
+
+
+# Update cucumber defaults
+update_cucumber
+
+
+# Initialize haml in project
+run "haml --rails ."
+replace_default_haml_init
+
+git :add => "."
+
+git :commit => "-a -m 'Initial commit'"
