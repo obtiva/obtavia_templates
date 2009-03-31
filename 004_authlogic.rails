@@ -65,7 +65,7 @@ def replace_default_test_environment_config
 config.gem 'webrat', :lib => false
 config.gem 'rspec-rails', :lib => false, :version => '>= 1.2.2'
 config.gem 'rspec', :lib => false, :version => '>= 1.2.2'
-config.gem 'cucumber'
+config.gem 'cucumber', :version => ">= 0.2.0"
 config.gem 'ZenTest'
 config.gem 'builder'
 config.gem 'diff-lcs', :lib => 'diff/lcs'
@@ -179,7 +179,7 @@ end
 }
 end
 
-def generate_session_controller
+def generate_session_controller_and_spec
   generate "rspec_controller", "session"
   file_name = "app/controllers/session_controller.rb"
   run "rm #{file_name}"
@@ -197,6 +197,7 @@ def generate_session_controller
     if @user_session.save
       redirect_to root_path
     else
+      flash[:error] = "Login failed. Please try again."
       render :action => :new
     end
   end
@@ -207,6 +208,93 @@ def generate_session_controller
   end
 
   def confirm_logout
+  end
+end
+}
+
+  file "spec/controllers/session_controller.rb",
+  %q{require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
+
+describe SessionController do
+  context "a GET to new" do
+    it "loads a user session for the view template" do
+      get :new
+      assigns(:user_session).should_not be_nil
+    end
+  end
+
+  context "a GET to confirm_logout" do
+    it "renders the confirm_logout view template" do
+      get :confirm_logout
+      response.should render_template('session/confirm_logout')
+    end
+  end
+
+  context "a DELETE to destroy" do
+    before(:each) do
+      @user_session = mock_model(UserSession, :destroy => true).as_null_object
+      controller.stub!(:current_user_session).and_return(@user_session)
+    end
+
+    def perform_request
+      delete :destroy
+    end
+
+    it "destroys the user's session" do
+      @user_session.should_receive(:destroy)
+      perform_request
+    end
+
+    it "redirects to the login path" do
+      perform_request
+      response.should redirect_to(login_path)
+    end
+  end
+
+  context "a POST to create" do
+    before(:each) do
+      controller.stub!(:current_user_session).and_return(nil)
+      @user_session = mock("New UserSession").as_null_object
+      @request_params = mock("Params for new UserSession")
+      UserSession.stub!(:new).with(@request_params).and_return(@user_session)
+    end
+
+    def perform_request
+      post :create, :user_session => @request_params
+    end
+
+    it "should save a new user session" do
+      @user_session.should_receive(:save).and_return(true)
+      perform_request
+      assigns(:user_session).should == @user_session
+    end
+
+    context "with valid credentials" do
+      before(:each) do
+        @user_session.stub!(:save).and_return(true)
+      end
+
+      it "redirects to the home page" do
+        perform_request
+        response.should redirect_to(root_path)
+      end
+    end
+
+    context "with invalid credentials" do
+      before(:each) do
+        @user_session.stub!(:save).and_return(false)
+      end
+
+      it "assigns an error for the view template" do
+        perform_request
+        flash[:error].should_not be_nil
+      end
+
+      it "renders the login form" do
+        perform_request
+        response.should render_template('session/new')
+      end
+    end
   end
 end
 }
@@ -228,7 +316,7 @@ end
 
 def generate_login_view
   file "app/views/session/new.html.haml",
-  %q{- form_for @user_session, :url => session_path, :method => :post do |f|
+  %q{- form_for @user_session, :url => session_path, :method => :post, :html => {:id => :login_form} do |f|
   = f.error_messages
   %div
     = f.label :login
@@ -239,7 +327,7 @@ def generate_login_view
   %div
     = f.password_field :password
   %div
-    = f.submit "Login"
+    = f.submit "Login", :id => :attempt_login
     = link_to "Forget your password?", new_support_password_reset_request_path
 }
 end
@@ -247,21 +335,16 @@ end
 def generate_home_page
   run "rm -f app/views/exterior/index.html.erb"
   file "app/views/exterior/index.html.haml",
-  %q{- unless flash.empty?
-  #flash
-    - flash.each do |type, text|
-      %div{:id => "flash_#{type}"}
-        =h text
-
-%div
-  - if logged_in?
-    Yes...it was really that easy. Now go write your app...
-    = link_to "[ Logout ]", logout_path
-  - else
-    Hello. Welcome to the future.
-    = link_to "Sign in", login_path
-    or
-    = link_to "Sign up", signup_path
+  %q{%div
+  %p
+    - if logged_in?
+      Yes...it was really that easy. Now go write your app...
+      = link_to "[Logout]", logout_path, :id => "logout"
+    - else
+      Hello. Welcome to the future.
+      = link_to "Sign in", login_path, :id => "login_link"
+      or
+      = link_to "Sign up", signup_path, :id => "signup_link"
 }
 end
 
@@ -338,8 +421,11 @@ def generate_users_controller_and_spec
   def create
     @user = User.new(params[:user])
     if @user.save
+      flash[:notice] = "Thanks for signing up!"
       redirect_to root_path
     else
+      flash[:error] = "There was an error setting up your account."
+      flash[:error] += "Please verify the supplied information and try again."
       render :action => :new
     end
   end
@@ -370,18 +456,18 @@ describe UsersController do
       @user.stub!(:save)
     end
 
-    def do_post
+    def perform_request
       post :create, :user => @user_params
     end
 
     it "initializes a new user object with the supplied parameters" do
-      do_post
+      perform_request
       assigns(:user).should == @user
     end
 
     it "saves the user object" do
       @user.should_receive(:save)
-      do_post
+      perform_request
     end
 
     context "with valid attributes" do
@@ -390,19 +476,29 @@ describe UsersController do
       end
 
       it "redirects to the home page" do
-        do_post
+        perform_request
         response.should redirect_to(root_path)
+      end
+
+      it "sets a notification for the view template" do
+        perform_request
+        flash[:notice].should_not be_nil
       end
     end
 
-    context "with valid attributes" do
+    context "with invalid attributes" do
       before(:each) do
         @user.stub!(:save).and_return(false)
       end
 
       it "renders the signup form again" do
-        do_post
+        perform_request
         response.should render_template('users/new')
+      end
+
+      it "sets an error message for the view template" do
+        perform_request
+        flash[:error].should_not be_nil
       end
     end
   end
@@ -414,6 +510,7 @@ def generate_new_user_view
   file "app/views/users/new.html.haml",
   %q{%h1 Setting up a new account
 - form_for @user do |f|
+  = error_messages_for(:user)
   %div
     = f.label :email
     = f.text_field :email
@@ -424,10 +521,10 @@ def generate_new_user_view
     = f.label :password
     = f.password_field :password
   %div
-    = f.label :password_confirmation
+    = f.label :password_confirmation, "Confirm Password"
     = f.password_field :password_confirmation
   %div
-    = submit_tag "Sign up"
+    = submit_tag "Sign up", :id => :create_user
 }
 end
 
@@ -608,10 +705,6 @@ end
 def add_password_reset_request_views
   file "app/views/support/password_reset_request/new.html.haml",
   %q{%h1 Send me a link to reset my password
-- if flash[:error]
-  .error
-    = flash[:error]
-
 - form_for User.new, :url => support_password_reset_request_path, :method => :post, :html => {:id => :new_reset_password_request, :class => nil} do |f|
   = f.label :email
   = f.text_field :email
@@ -913,7 +1006,7 @@ end
 
 # Comment out the next two lines if you're not using RSpec's matchers (should / should_not) in your steps.
 require 'cucumber/rails/rspec'
-require 'webrat/rspec-rails'
+require 'webrat/core/matchers'
 }
 end
 
@@ -995,6 +1088,159 @@ end
 }
 end
 
+def add_webrat_paths
+  file "features/support/paths.rb",
+  %q{def path_to(page_name)
+  case page_name
+  when /the homepage/i
+    root_path
+  when /the (sign up|signup) page/i
+    signup_path
+  when /the (sign in|signin|login) page/i
+    login_path
+  else
+    raise "Can't find mapping from \"#{page_name}\" to a path."
+  end
+end
+}
+end
+
+def add_authlogic_feature_specs
+  file "features/sign_in.feature",
+  %q{Feature: Signing into a session
+  Users will not create content they value if they are not able to
+  securely access it in the future. In order to make
+  this possible, we must give them the ability to
+  sign into the site. The current preferred method of doing so is
+  the standard login/password seen on most websites.
+
+    Background:
+      Given no users exist
+
+    Scenario: User is not signed up
+      And I sign in as "jdoe/password"
+      Then I should see an error message
+      And I should see the login form
+      And I should not see link to logout
+
+    Scenario: User enters wrong password
+      Given I am signed up as "jdoe/password"
+      And I sign in as "jdoe/wrongpassword"
+      Then I should see an error message
+      And I should see the login form
+      And I should not see link to logout
+
+    Scenario: User signs in successfully
+      Given I am signed up as "jdoe/password"
+      And I sign in as "jdoe/password"
+      Then I should see link to logout
+}
+
+  file "features/sign_out.feature",
+  %q{Feature: Signing out of a session
+  Users will not create content they value if they are not able to
+  ensure it will be safe from malicious users. In order to make
+  such an assurance to our users, we must give them the ability to
+  sign out of their session
+
+  Background:
+    Given I am signed up as "jdoe/password"
+    And I sign in as "jdoe/password"
+
+  Scenario: User signs out
+    When I log out
+    And I should see the login form
+}
+
+  file "features/sign_up.feature",
+  %q{Feature: User Sign-Up
+  People are more likely to find value in content they have
+  created and/or contributed to themselves, or that which
+  is associated with an entity they respect (person, company, etc).
+  In order to reliably identify people and content they have generated,
+  the site must allow people to sign up for their own accounts.
+
+    Background:
+      Given no users exist
+
+    Scenario: User signs up with invalid data
+      When I go to the sign up page
+      And I fill in "user_login" with "in"
+      And I fill in "user_email" with "invalidemail"
+      And I fill in "user_password" with "password"
+      And I fill in "user_password" with ""
+      And I press the button to create a user
+      Then I should see an error message
+
+    Scenario: User signs up with valid data
+      When I go to the sign up page
+      And I fill in "user_login" with "valid_login"
+      And I fill in "user_email" with "email@person.com"
+      And I fill in "user_password" with "password"
+      And I fill in "user_password_confirmation" with "password"
+      And I press the button to create a user
+      Then I should see a notification
+}
+
+  file "features/step_definitions/authentication_steps.rb",
+  %q{def create_user(params = {})
+  pwd = "password"
+  user_params = {:login => "jdoe", :password => pwd, :password_confirmation => pwd, :email => "jdoe@example.com"}.merge(params)
+  User.create(user_params)
+end
+
+Given /no users exist/ do
+  User.destroy_all
+end
+
+When /^I press the button to create a(?:n)? (\w+)$/ do |model_type|
+  button_dom_id = "create_#{model_type.downcase}"
+  click_button(button_dom_id)
+end
+
+When /^I sign in as "(.*)\/(.*)"$/ do |login, password|
+  When "I go to the login page"
+  fill_in("user_session_login", :with => login)
+  fill_in("user_session_password", :with => password)
+  click_button("attempt_login")
+end
+
+Then /^I log out$/ do
+  click_link("logout")
+end
+
+Then /^I should see the login form$/ do
+  response.should have_tag("form#login_form")
+end
+
+Given /^I am signed up as "(.*)\/(.*)"$/ do |login, password|
+  user = create_user(:login => login, :password => password, :password_confirmation => password)
+end
+
+Then /^I should not see link to logout$/ do
+  response.should_not have_tag("a#logout")
+end
+
+Then /^I should see link to logout$/ do
+  response.should have_tag("a#logout")
+end
+}
+
+  file "features/step_definitions/helper_steps.rb",
+  %q{Then /^dump response$/ do
+  puts response.body
+end
+
+Then /^I should see an error message$/ do
+  response.should have_tag("#site_notifications .error")
+end
+
+Then /^I should see a notification$/ do
+  response.should have_tag("#site_notifications .notice")
+end
+}
+end
+
 def add_password_reset_support
   add_password_reset_request_controller_and_spec
   add_password_reset_request_views
@@ -1020,6 +1266,45 @@ end
 def add_password_reset_request_controller_and_spec
   add_password_reset_request_controller
   add_password_reset_request_controller_spec
+end
+
+def add_basic_application_layout
+  file "app/views/layouts/application.html.haml",
+  %q{- if !ie?
+  !!! XML
+!!! Strict
+%html
+  %head
+    = stylesheet_link_tag 'tenplate'
+    %link{'rel' => "alternate", 'type' => "application/rss+xml", 'title' => "RSS 2.0", 'href' => "http://www.pinmonkey.com/pages/1.rss"}
+
+  %body
+    = render :partial => 'layouts/flashes'
+    = yield
+}
+
+  file "app/views/layouts/_flashes.html.haml",
+  %q{- unless flash.empty?
+  #site_notifications
+    - flash.each do |flash_type, flash_text|
+      %div{:class => flash_type}= h flash_text
+}
+end
+
+def replace_application_helper
+  file_name = "app/helpers/application_helper.rb"
+  run "rm #{file_name}"
+  file file_name,
+  %q{# Methods added to this helper will be available to all templates in the application.
+module ApplicationHelper
+  def ie?
+    m = /MSIE\s+([0-9, \.]+)/.match(request.user_agent)
+    unless m.nil?
+      m[1].to_f
+    end
+  end
+end
+}
 end
 
 ####### TEMPLATE STARTS HERE
@@ -1055,6 +1340,7 @@ tmp/**/*
 doc/api
 doc/app
 config/database.yml
+coverage/**/*
 CODE
 
 run "cp config/database.yml config/database.yml.sample"
@@ -1103,18 +1389,20 @@ add_notifier_mailer_and_specs
 add_password_reset_support
 
 # Create a controller with basic views for logging in & out
-generate_session_controller
+generate_session_controller_and_spec
 generate_login_view
 generate_logout_confirmation_page
 generate_users_controller_and_spec
 generate_new_user_view
 generate_home_page
 replace_default_application_controller
-
+add_basic_application_layout
+replace_application_helper
 
 # Update cucumber defaults
 update_cucumber
-
+add_authlogic_feature_specs
+add_webrat_paths
 
 # Initialize haml in project
 run "haml --rails ."
