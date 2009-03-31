@@ -29,7 +29,7 @@ def replace_default_test_environment_config
 config.gem 'webrat', :lib => false
 config.gem 'rspec-rails', :lib => false, :version => '>= 1.2.2'
 config.gem 'rspec', :lib => false, :version => '>= 1.2.2'
-config.gem 'cucumber'
+config.gem 'cucumber', :version => ">= 0.2.0"
 config.gem 'ZenTest'
 config.gem 'builder'
 config.gem 'diff-lcs', :lib => 'diff/lcs'
@@ -90,7 +90,7 @@ end
 
 # Comment out the next two lines if you're not using RSpec's matchers (should / should_not) in your steps.
 require 'cucumber/rails/rspec'
-require 'webrat/rspec-rails'
+require 'webrat/core/matchers'
 }
 end
 
