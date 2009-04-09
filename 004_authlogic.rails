@@ -1275,12 +1275,16 @@ def add_basic_application_layout
 !!! Strict
 %html
   %head
-    = stylesheet_link_tag 'tenplate'
-    %link{'rel' => "alternate", 'type' => "application/rss+xml", 'title' => "RSS 2.0", 'href' => "http://www.pinmonkey.com/pages/1.rss"}
-
+    = yield :head
   %body
-    = render :partial => 'layouts/flashes'
     = yield
+  - # include javascript
+  = javascript_include_tag :all
+  = yield :javascript
+  :javascript
+    document.observe("dom:loaded",function(ev){
+      #{yield :onReady}
+    });
 }
 
   file "app/views/layouts/_flashes.html.haml",
