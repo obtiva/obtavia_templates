@@ -1277,6 +1277,7 @@ def add_basic_application_layout
   %head
     = yield :head
   %body
+    = render :partial => 'layouts/flashes'
     = yield
   - # include javascript
   = javascript_include_tag :all
